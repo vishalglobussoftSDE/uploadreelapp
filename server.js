@@ -1,36 +1,101 @@
 import express from 'express';
+import dotenv from 'dotenv';
+import multer from 'multer';
+import { S3Client, PutObjectCommand, ListObjectsV2Command, GetObjectCommand } from '@aws-sdk/client-s3';
+import stream from 'stream';
+import { promisify } from 'util';
 
+dotenv.config();
 const app = express();
-const PORT = process.env.PORT || 5000;
+const port = process.env.PORT || 5000;
 
-// Middleware
-app.use(express.json()); // Parse JSON bodies
+// Multer memory storage
+const upload = multer({ storage: multer.memoryStorage() });
 
-// Routes
-app.get('/', (req, res) => {
-  res.send('Welcome to Express with ES Modules!');
+// Wasabi S3 Client
+const s3 = new S3Client({
+  endpoint: process.env.WASABI_ENDPOINT,
+  region: process.env.WASABI_REGION,
+  credentials: {
+    accessKeyId: process.env.WASABI_ACCESS_KEY,
+    secretAccessKey: process.env.WASABI_SECRET_KEY,
+  },
 });
 
-app.post('/api/upload', (req, res) => {
-  res.json({ message: 'upload from API!' });
+app.post('/upload', upload.single('video'), async (req, res) => {
+  const file = req.file;
+  if (!file) return res.status(400).json({ error: 'No file uploaded' });
+  
+  const key = file.originalname; 
+
+  try {
+    await s3.send(new PutObjectCommand({
+      Bucket: process.env.WASABI_BUCKET,
+      Key: key,
+      Body: file.buffer,
+      ContentType: file.mimetype,
+    }));
+
+    res.json({
+      message: 'Upload successful',
+      file: {
+        name: file.originalname,
+        key,
+        // url: `http://localhost:${port}/stream?key=${encodeURIComponent(key)}`
+      }
+    });
+  } catch (err) {
+    console.error('Upload error:', err);
+    res.status(500).json({ error: 'Upload failed', details: err.message });
+  }
 });
 
-app.get('/api/get-images', (req, res) => {
-  res.status(201).json({ message: 'Data received', data });
+// 📁 List Files API: GET /files
+app.get('/files', async (req, res) => {
+  try {
+    const data = await s3.send(new ListObjectsV2Command({
+      Bucket: process.env.WASABI_BUCKET,
+    }));
+
+    const files = (data.Contents || []).map(file => ({
+      name: file.Key,
+      key: file.Key,
+      url: `http://localhost:${port}/stream?key=${encodeURIComponent(file.Key)}`,
+    }));
+
+    res.json({ files });
+  } catch (err) {
+    console.error('List error:', err);
+    res.status(500).json({ error: 'Failed to list files', details: err.message });
+  }
 });
 
-// 404 Handler
-app.use((req, res, next) => {
-  res.status(404).json({ error: 'Route not found' });
+// 🎥 Stream API: GET /stream?key=filename.mp4
+app.get('/stream', async (req, res) => {
+  const key = req.query.key;
+  if (!key) return res.status(400).json({ error: 'Missing key' });
+
+  try {
+    const data = await s3.send(new GetObjectCommand({
+      Bucket: process.env.WASABI_BUCKET,
+      Key: key,
+    }));
+
+    res.set({
+      'Content-Type': data.ContentType || 'video/mp4',
+      'Content-Length': data.ContentLength,
+      'Accept-Ranges': 'bytes',
+    });
+
+    const pipeline = promisify(stream.pipeline);
+    await pipeline(data.Body, res);
+  } catch (err) {
+    console.error('Stream error:', err);
+    res.status(500).json({ error: 'Failed to stream video', details: err.message });
+  }
 });
 
-// Error Handler
-app.use((err, req, res, next) => {
-  console.error(err.stack);
-  res.status(500).json({ error: 'Something went wrong!' });
-});
-
-// Start Server
-app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
+// 🚀 Start Server
+app.listen(port, () => {
+  console.log(`Server running at http://localhost:${port}`);
 });
