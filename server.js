@@ -10,7 +10,7 @@ const app = express();
 const port = process.env.PORT || 5000;
 
 // Multer memory storage
-const upload = multer({ storage: multer.memoryStorage() });
+const upload = multer({ storage: multer.memoryStorage() }); 
 
 // Wasabi S3 Client
 const s3 = new S3Client({
@@ -60,7 +60,7 @@ app.get('/files', async (req, res) => {
     const files = (data.Contents || []).map(file => ({
       name: file.Key,
       key: file.Key,
-      url: `http://localhost:${port}/stream?key=${encodeURIComponent(file.Key)}`,
+      url: "" // get signed url
     }));
 
     res.json({ files });
